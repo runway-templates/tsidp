@@ -1,0 +1,118 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/runway-templates/schema/refs/heads/main/v1alpha1.json
+apiVersion: schema.runway.horse/templates/v1alpha1
+kind: Template
+
+metadata:
+  name: tsidp
+  version: 0.1.0
+  displayName: tsidp
+  description: |
+    OIDC identity provider backed by Tailscale: log in to your apps with the
+    Tailscale accounts your team already has. Joins your tailnet as its own
+    node, with state on a volume. No public route; reachable over your
+    tailnet, or over the internet with Tailscale Funnel.
+  category: security
+  tags: [tsidp, tailscale, oidc, oauth, sso, identity, mcp, oss]
+  logo: ./logo.svg
+  documentation: https://tailscale.com/docs/features/tsidp/
+  website: https://tailscale.com
+  source: https://github.com/tailscale/tsidp
+  license: BSD-3-Clause
+  maintainer: runway
+
+inputs:
+  ts_authkey:
+    type: string
+    required: true
+    secret: true
+    pattern: "^tskey-"
+    description: |
+      Tailscale auth key, created with the tag 'tag:tsidp'. Only used on the
+      first start, to add tsidp to your tailnet.
+
+  hostname:
+    type: string
+    default: idp
+    pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+    description: |
+      Name on your tailnet. tsidp is served at
+      https://<hostname>.<tailnet-name>.ts.net.
+
+  funnel:
+    type: boolean
+    default: false
+    description: |
+      Serve tsidp on the public internet with Tailscale Funnel. Needs the
+      'funnel' node attribute for 'tag:tsidp' in your tailnet policy.
+
+  image_tag:
+    type: string
+    default: "v0.0.21"
+    enum: ["v0.0.21", "v0.0.20"]
+    description: tsidp version.
+
+services:
+  - name: tsidp
+    image: "ghcr.io/tailscale/tsidp:${{ inputs.image_tag }}"
+
+    # No command override: the image entrypoint runs tsidp-server.
+
+    # No PORT: tsidp listens on its own tailnet interface (tsnet), not on a
+    # port in the pod. So there is nothing to route or to probe.
+    env:
+      RUNWAY_TS_MANAGED:
+        value: "false"
+        description: |
+          Turns off Runway's Tailscale sidecar. tsidp is a Tailscale node
+          itself and reads the TS_* variables directly.
+        warning: |
+          Do NOT change it. With the sidecar on, a second node joins your
+          tailnet and tsidp does not get its TS_* settings.
+
+      # Needed while tsidp is below 1.0.0.
+      TAILSCALE_USE_WIP_CODE: "1"
+
+      TS_AUTHKEY:
+        value: "${{ inputs.ts_authkey }}"
+        description: |
+          Auth key that adds tsidp to your tailnet. Only read while there is
+          no node state on the volume.
+        warning: |
+          Changing it does nothing once tsidp has joined your tailnet. A new
+          key is only needed after the node state on the volume is gone.
+
+      TS_STATE_DIR:
+        value: /data
+        description: Node state and registered OIDC clients, on the volume.
+        warning: |
+          Must stay on the volume. Anywhere else, tsidp joins your tailnet
+          again on every restart and loses all OIDC clients.
+
+      TS_HOSTNAME:
+        value: "${{ inputs.hostname }}"
+        description: Name on your tailnet.
+        warning: |
+          The hostname is part of the issuer URL. Changing it breaks every
+          app that is set up with the old URL.
+
+      TSIDP_USE_FUNNEL: "${{ inputs.funnel }}"
+      # OAuth token exchange (RFC 8693). Who may use it is set by the
+      # capability grant in the tailnet policy.
+      TSIDP_ENABLE_STS: "true"
+
+    volume:
+      mountPath: /data
+
+    # The image already runs as app (1001); this makes the volume writable
+    # for its group.
+    runAs:
+      user: 1001
+      group: 1001
+
+    settings:
+      # Served over the tailnet (and Funnel), never over Runway's router.
+      route: false
+      # tsidp only writes to the volume.
+      lockdown: true
+
+    minPlan: free-launch
